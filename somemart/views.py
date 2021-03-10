@@ -1,4 +1,6 @@
 import json
+import base64
+from functools import wraps
 
 from django.http import HttpResponse, JsonResponse
 from django.views import View
@@ -6,6 +8,7 @@ from django.views import View
 from .models import Item, Review
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
+from django.contrib.auth import authenticate, login
 
 
 
@@ -32,7 +35,41 @@ class ReviewSchema(Schema):
     def make(self, data):
         return Review(**data)
 
+
+def basicauth(view_func):
+    """Декоратор реализующий HTTP Basic AUTH."""
+    @wraps(view_func)
+    def _wrapped_view(request, *args, **kwargs):
+        if 'HTTP_AUTHORIZATION' in request.META:
+            auth = request.META['HTTP_AUTHORIZATION'].split()
+            if len(auth) == 2:
+                if auth[0].lower() == 'basic':
+                    token = base64.b64decode(auth[1].encode('ascii'))
+                    username, password = token.decode('utf-8').split(':')
+                    user = authenticate(username=username, password=password)
+                    if user is not None and user.is_active:
+                        request.user = user
+                        return view_func(request, *args, **kwargs)
+
+        response = HttpResponse(status=401)
+        response['WWW-Authenticate'] = 'Basic realm="Somemart staff API"'
+        return response
+    return _wrapped_view
+
+def staff_required(view_func):
+    """Декоратор проверяющший наличие флага is_staff у пользователя."""
+    @wraps(view_func)
+    def _wrapped_view(request, *args, **kwargs):
+        if request.user.is_staff:
+            return view_func(request, *args, **kwargs)
+        response = HttpResponse(status=403)
+        return response
+    return _wrapped_view
+
+
 @method_decorator(csrf_exempt, name='dispatch')
+@method_decorator(basicauth, name='dispatch')
+@method_decorator(staff_required, name='dispatch')
 class AddItemView(View):
     """View для создания товара."""
 
